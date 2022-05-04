@@ -1,60 +1,65 @@
-import torch
-from torch.utils.data import DataLoader
-from torch.autograd import Variable
-from model import SiameseNet,LcqmcDataset,ContrastiveLoss
-from data_load import get_embed
-import numpy as np
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# author： zhaoyoubiao(Fery)
+# datetime： 2022/5/4 4:49 下午 
+# ide： PyCharm
+# --------------------------------
+import os
 import args
+import torch
+import numpy as np
+from torch.autograd import Variable
+from torch.utils.data import DataLoader
+from simesenet import SiameseNet, lcqmcDataset, ContrastiveLoss
 
+'''1， 创建数据集并建立数据载入器'''
+train_data = lcqmcDataset(args.train_path, args.vocab_path)
+test_data = lcqmcDataset(args.test_path, args.vocab_path)
+train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=True)
 
-if __name__ == '__main__':
-    embed, char2idx, idx2char = get_embed(args.VOCAB_FILE)
+'''2，有gpu使用gpu， 无使用cpu'''
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+model = SiameseNet().to(device)
 
-    train_data=LcqmcDataset(args.TRAIN_DATA,args.VOCAB_FILE)
-    test_data=LcqmcDataset(args.TEST_DATA,args.VOCAB_FILE)
-    train_loader=DataLoader(dataset=train_data,batch_size=args.BATCH_SIZE,shuffle=True)
-    test_loader=DataLoader(dataset=test_data,batch_size=args.BATCH_SIZE,shuffle=True)
+'''3， 定义优化方式和损失函数'''
+optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+loss_fun = ContrastiveLoss()
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    #device = 'cpu'
+'''4， 训练模型'''
+for epoch in range(args.epoch):
+    for step, (text_a, text_b, label) in enumerate(train_loader):
+        '''4.1载入数据'''
+        a = Variable(text_a.to(device).long())
+        b = Variable(text_b.to(device).long())
+        l = Variable(torch.LongTensor(label).float().to(device))
+        '''4.2计算余弦相似度'''
+        consine = model(a, b)
+        '''4.3预测结果传给loss'''
+        loss = loss_fun(consine, l)
+        '''4.4 固定格式:
+        1)梯度清零
+        2)反向传播
+        3)梯度迭代'''
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        '''4.5 打印日志'''
+        if step % 200 == 0:
+            total = 0
+            correct = 0
+            for (test_a, test_b, l) in test_loader:
+                test_a = Variable(test_a.to(device).long())
+                test_b = Variable(test_b).to(device).long()
+                test_l = Variable(torch.LongTensor(l).float().to(device))
+                consine = model(test_a, test_b)
 
-    net=SiameseNet(embed).to(device)
-    optimizer=torch.optim.Adam(net.parameters(),lr=args.LR)
-    loss_func = ContrastiveLoss()
+                out = torch.Tensor(np.array([1 if cos > args.m else 0 for cos in consine])).long()
 
-    for epoch in range(args.EPOCH):
-        for step, (text_a, text_b, label) in enumerate(train_loader):
-            # 1、把索引转化为tensor变量，载入设备，注意转化成long tensor
-            a = Variable(text_a.to(device).long())
-            b = Variable(text_b.to(device).long())
-            l = Variable(torch.LongTensor(label).float().to(device))
+                if out.size() == l.size():
+                    total += l.size(0)
+                    correct += (out==l.cpu()).sum().item()
+            print('[EPOCH ~ Step:]', epoch + 1, '~', step + 1, '训练loss:', loss.item())
+            print('[EPOCH]:', epoch + 1, '测试准确率:', (correct * 1.0 / total))
 
-            # 2、计算余弦相似度
-            cosine = net(a, b)
-
-            # 3、预测结果传给loss
-            loss = loss_func(cosine, l)
-
-            # 4、固定格式
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            if step % 200 == 0:
-                total = 0
-                correct = 0
-                for (test_a, test_b, test_l) in test_loader:
-                    tst_a = Variable(test_a.to(device).long())
-                    tst_b = Variable(test_b.to(device).long())
-                    tst_l = Variable(torch.LongTensor(test_l).to(device))
-                    cosine = net(tst_a, tst_b)
-                    #     print(cosine)
-                    out = torch.Tensor(np.array([1 if cos > args.M else 0 for cos in cosine])).long()
-                    #     print(out)
-                    if out.size() == tst_l.size():
-                        total += tst_l.size(0)
-                        correct += (out == tst_l.cpu()).sum().item()
-                print('[Epoch ~ Step]:', epoch + 1, '~', step + 1, '训练loss:', loss.item())
-                print('[Epoch]:', epoch + 1, '测试集准确率: ', (correct * 1.0 / total))
-
-    torch.save(net, args.MODEL_FILE)
+torch.save(model, args.model_path)
